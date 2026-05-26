@@ -30,6 +30,7 @@ dependencies {
     implementation("org.jetbrains.exposed:exposed-core:0.61.0")
     implementation("org.jetbrains.exposed:exposed-jdbc:0.61.0")
     implementation("org.jetbrains.exposed:exposed-dao:0.61.0")
+    implementation("org.jetbrains.exposed:exposed-java-time:0.61.0")
 
     // implementação do HikariCP ( pool de conexões )
     implementation("com.zaxxer:HikariCP:6.2.1")
