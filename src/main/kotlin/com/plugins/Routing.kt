@@ -5,13 +5,31 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.websocket.*
 import io.ktor.websocket.*
+import com.service.authRoutes
+import com.service.requireValidToken
 
 fun Application.configureRouting() {
     routing {
+        authRoutes()
+
         get("/") {
             call.respondText("Hello, World!")
         }
-        webSocket("/ws") { // websocketSession
+
+        get("/protected") {
+            if (!requireValidToken()) return@get // Interrompe a execução aqui caso falte autenticação
+
+            call.respondText("Você está autenticado!")
+        }
+
+// Exemplo com role específica corrigida:
+        get("/admin") {
+            if (!requireValidToken(requiredRole = "ADMIN")) return@get
+
+            call.respondText("Área admin!")
+        }
+
+        webSocket("/ws") {
             for (frame in incoming) {
                 if (frame is Frame.Text) {
                     val text = frame.readText()
@@ -21,9 +39,6 @@ fun Application.configureRouting() {
                     }
                 }
             }
-        }
-        get("/json/kotlinx-serialization") {
-            call.respond(mapOf("hello" to "world"))
         }
     }
 }
