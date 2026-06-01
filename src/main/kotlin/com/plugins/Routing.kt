@@ -6,25 +6,26 @@ import io.ktor.server.routing.*
 import io.ktor.server.websocket.*
 import io.ktor.websocket.*
 import com.service.authRoutes
+import com.service.tokenRoutes       // <- import novo
 import com.service.requireValidToken
 
 fun Application.configureRouting() {
     routing {
         authRoutes()
+        tokenRoutes()               // <- registra a rota
 
         get("/") {
             call.respondText("Hello, World!")
         }
 
         get("/protected") {
-            if (!requireValidToken()) return@get // Interrompe a execução aqui caso falte autenticação
+            if (!requireValidToken()) return@get
 
             call.respondText("Você está autenticado!")
         }
 
-// Exemplo com role específica corrigida:
         get("/admin") {
-            if (!requireValidToken(requiredRole = "ADMIN")) return@get
+            if (!requireValidToken(requiredRole = "admin")) return@get
 
             call.respondText("Área admin!")
         }
