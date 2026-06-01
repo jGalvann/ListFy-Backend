@@ -10,6 +10,7 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.serialization.Serializable
 import org.jetbrains.exposed.sql.and
+import org.jetbrains.exposed.sql.andWhere
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
@@ -20,6 +21,16 @@ data class CreateItemRequest(
     val quantidade: Int,
     val descricao: String? = null,
     val idLocal: Int? = null
+)
+
+@Serializable
+data class ItemResponse(
+    val idCompra: Int,
+    val nome: String,
+    val quantidade: Int,
+    val descricao: String? = null,
+    val idLocal: Int? = null,
+    val comprado: Boolean
 )
 
 fun Route.itemRoutes() {
@@ -107,4 +118,69 @@ fun Route.itemRoutes() {
             else -> call.respond(HttpStatusCode.InternalServerError)
         }
     }
+
+    // GET /itens?status=pendente|comprado&idLocal=X
+    get("/itens") {
+        if (!requireValidToken()) return@get
+
+        val rawToken = call.request.headers["Authorization"]
+            ?.removePrefix("Bearer ")?.trim() ?: return@get
+
+        // Query params
+        val statusParam = call.request.queryParameters["status"]   // "pendente" | "comprado" | null
+        val idLocalParam = call.request.queryParameters["idLocal"]?.toIntOrNull()
+
+        val itens = transaction {
+            // Resolve idLista do usuário
+            val idTokenUsuario = TokenTable
+                .selectAll()
+                .where { TokenTable.valor eq rawToken }
+                .single()[TokenTable.idToken]
+
+            val listaRow = ListaCompraTable
+                .selectAll()
+                .where { ListaCompraTable.idToken eq idTokenUsuario }
+                .singleOrNull() ?: return@transaction emptyList()
+
+            val idListaUsuario = listaRow[ListaCompraTable.idLista]
+
+            // Monta a query base
+            var query = ItemCompraTable
+                .selectAll()
+                .where { ItemCompraTable.idLista eq idListaUsuario }
+
+            // Filtro por status (RN04)
+            when (statusParam) {
+                "pendente"  -> query = query.andWhere { ItemCompraTable.status eq false }
+                "comprado"  -> query = query.andWhere { ItemCompraTable.status eq true }
+                null        -> { /* sem filtro: retorna tudo */ }
+                else -> return@transaction null   // valor inválido → sinaliza 400
+            }
+
+            // Filtro por local
+            if (idLocalParam != null) {
+                query = query.andWhere { ItemCompraTable.idLocal eq idLocalParam }
+            }
+
+            query.map { row ->
+                ItemResponse(
+                    idCompra   = row[ItemCompraTable.idCompra],
+                    nome       = row[ItemCompraTable.nome],
+                    quantidade = row[ItemCompraTable.quantidade],
+                    descricao  = row[ItemCompraTable.descricao],
+                    idLocal    = row[ItemCompraTable.idLocal],
+                    comprado   = row[ItemCompraTable.status]
+                )
+            }
+        }
+
+        when (itens) {
+            null -> call.respond(
+                HttpStatusCode.BadRequest,
+                mapOf("error" to "Valor inválido para 'status'. Use 'pendente' ou 'comprado'.")
+            )
+            else -> call.respond(HttpStatusCode.OK, itens)
+        }
+    }
+
 }
