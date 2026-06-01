@@ -4,7 +4,6 @@ import com.database.ItemCompraTable
 import com.database.ListaCompraTable
 import com.database.TokenTable
 import io.ktor.http.*
-import io.ktor.server.application.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
@@ -14,6 +13,7 @@ import org.jetbrains.exposed.sql.andWhere
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
+import org.jetbrains.exposed.sql.update
 
 @Serializable
 data class CreateItemRequest(
@@ -31,6 +31,14 @@ data class ItemResponse(
     val descricao: String? = null,
     val idLocal: Int? = null,
     val comprado: Boolean
+)
+
+@Serializable
+data class UpdateItemRequest(
+    val nome: String? = null,
+    val quantidade: Int? = null,
+    val descricao: String? = null,
+    val idLocal: Int? = null
 )
 
 fun Route.itemRoutes() {
@@ -183,4 +191,79 @@ fun Route.itemRoutes() {
         }
     }
 
+    put("/itens/{id}") {
+        if (!requireValidToken()) return@put
+
+        val rawToken = call.request.headers["Authorization"]
+            ?.removePrefix("Bearer ")?.trim() ?: return@put
+
+        val idCompra = call.parameters["id"]?.toIntOrNull()
+        if (idCompra == null) {
+            call.respond(HttpStatusCode.BadRequest, mapOf("error" to "ID inválido."))
+            return@put
+        }
+
+        val body = call.receive<UpdateItemRequest>()
+
+        // RN07: pelo menos um campo deve ser enviado
+        if (body.nome == null && body.quantidade == null && body.descricao == null && body.idLocal == null) {
+            call.respond(HttpStatusCode.BadRequest, mapOf("error" to "Informe ao menos um campo para atualizar."))
+            return@put
+        }
+
+        // RN01: validações se os campos foram enviados
+        if (body.nome != null && body.nome.isBlank()) {
+            call.respond(HttpStatusCode.BadRequest, mapOf("error" to "O nome do item não pode ser vazio."))
+            return@put
+        }
+        if (body.quantidade != null && body.quantidade <= 0) {
+            call.respond(HttpStatusCode.BadRequest, mapOf("error" to "A quantidade deve ser maior que zero."))
+            return@put
+        }
+
+        val resultado = transaction {
+            // Garante que o item pertence à lista do token
+            val idTokenUsuario = TokenTable
+                .selectAll()
+                .where { TokenTable.valor eq rawToken }
+                .single()[TokenTable.idToken]
+
+            val idListaUsuario = ListaCompraTable
+                .selectAll()
+                .where { ListaCompraTable.idToken eq idTokenUsuario }
+                .singleOrNull()?.get(ListaCompraTable.idLista)
+                ?: return@transaction HttpStatusCode.NotFound
+
+            val itemRow = ItemCompraTable
+                .selectAll()
+                .where {
+                    (ItemCompraTable.idCompra eq idCompra) and
+                            (ItemCompraTable.idLista eq idListaUsuario)
+                }
+                .singleOrNull() ?: return@transaction HttpStatusCode.NotFound
+
+            // RN07: bloqueia edição se já comprado
+            if (itemRow[ItemCompraTable.status]) {
+                return@transaction HttpStatusCode.Conflict
+            }
+
+            ItemCompraTable.update(
+                where = { ItemCompraTable.idCompra eq idCompra }
+            ) {
+                if (body.nome != null)       it[nome]       = body.nome
+                if (body.quantidade != null) it[quantidade] = body.quantidade
+                if (body.descricao != null)  it[descricao]  = body.descricao
+                if (body.idLocal != null)    it[idLocal]    = body.idLocal
+            }
+
+            HttpStatusCode.OK
+        }
+
+        when (resultado) {
+            HttpStatusCode.NotFound -> call.respond(HttpStatusCode.NotFound, mapOf("error" to "Item não encontrado."))
+            HttpStatusCode.Conflict -> call.respond(HttpStatusCode.Conflict, mapOf("error" to "Não é possível editar um item já comprado."))
+            HttpStatusCode.OK       -> call.respond(HttpStatusCode.OK, mapOf("message" to "Item atualizado com sucesso!"))
+            else                    -> call.respond(HttpStatusCode.InternalServerError)
+        }
+    }
 }
