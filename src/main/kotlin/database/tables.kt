@@ -36,7 +36,7 @@ object ListaCompraTable : Table("lista_compra") {
 object ItemCompraTable : Table("item_compra") {
     val idCompra   = integer("id_compra").autoIncrement()
     val idLista    = integer("id_lista").references(ListaCompraTable.idLista)
-    val idLocal    = integer("id_local").references(LocalCompraTable.idLocal)
+    val idLocal    = integer("id_local").references(LocalCompraTable.idLocal).nullable()
     val nome       = varchar("nome", 50)
     val quantidade = integer("quantidade")
     val descricao  = varchar("descricao", 250).nullable()

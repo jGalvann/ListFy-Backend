@@ -6,13 +6,15 @@ import io.ktor.server.routing.*
 import io.ktor.server.websocket.*
 import io.ktor.websocket.*
 import com.service.authRoutes
-import com.service.tokenRoutes       // <- import novo
+import com.service.tokenRoutes
+import com.service.itemRoutes
 import com.service.requireValidToken
 
 fun Application.configureRouting() {
     routing {
         authRoutes()
-        tokenRoutes()               // <- registra a rota
+        tokenRoutes()
+        itemRoutes()
 
         get("/") {
             call.respondText("Hello, World!")
