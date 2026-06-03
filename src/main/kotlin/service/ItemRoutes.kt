@@ -8,11 +8,13 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.serialization.Serializable
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.andWhere
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
+import org.jetbrains.exposed.sql.deleteWhere
 import org.jetbrains.exposed.sql.update
 
 @Serializable
@@ -40,6 +42,8 @@ data class UpdateItemRequest(
     val descricao: String? = null,
     val idLocal: Int? = null
 )
+
+
 
 fun Route.itemRoutes() {
     post("/itens") {
@@ -264,6 +268,55 @@ fun Route.itemRoutes() {
             HttpStatusCode.Conflict -> call.respond(HttpStatusCode.Conflict, mapOf("error" to "Não é possível editar um item já comprado."))
             HttpStatusCode.OK       -> call.respond(HttpStatusCode.OK, mapOf("message" to "Item atualizado com sucesso!"))
             else                    -> call.respond(HttpStatusCode.InternalServerError)
+        }
+    }
+
+    delete("/itens/{id}") {
+        if (!requireValidToken()) return@delete
+
+        val rawToken = call.request.headers["Authorization"]
+            ?.removePrefix("Bearer ")?.trim() ?: return@delete
+
+        val idCompra = call.parameters["id"]?.toIntOrNull()
+        if (idCompra == null) {
+            call.respond(HttpStatusCode.BadRequest, mapOf("error" to "ID inválido."))
+            return@delete
+        }
+
+        val resultado = transaction {
+            val idTokenUsuario = TokenTable
+                .selectAll()
+                .where { TokenTable.valor eq rawToken }
+                .single()[TokenTable.idToken]
+
+            val idListaUsuario = ListaCompraTable
+                .selectAll()
+                .where { ListaCompraTable.idToken eq idTokenUsuario }
+                .singleOrNull()?.get(ListaCompraTable.idLista)
+                ?: return@transaction HttpStatusCode.NotFound
+
+            val itemRow = ItemCompraTable
+                .selectAll()
+                .where {
+                    (ItemCompraTable.idCompra eq idCompra) and
+                            (ItemCompraTable.idLista eq idListaUsuario)
+                }
+                .singleOrNull() ?: return@transaction HttpStatusCode.NotFound
+
+            if (itemRow[ItemCompraTable.status]) {
+                return@transaction HttpStatusCode.Conflict
+            }
+
+            ItemCompraTable.deleteWhere { ItemCompraTable.idCompra eq idCompra }
+
+            HttpStatusCode.NoContent
+        }
+
+        when (resultado) {
+            HttpStatusCode.NotFound -> call.respond(HttpStatusCode.NotFound, mapOf("error" to "Item não encontrado."))
+            HttpStatusCode.Conflict -> call.respond(HttpStatusCode.Conflict, mapOf("error" to "Não é possível remover um item já comprado."))
+            HttpStatusCode.NoContent -> call.respond(HttpStatusCode.NoContent)
+            else -> call.respond(HttpStatusCode.InternalServerError)
         }
     }
 }
