@@ -7,7 +7,8 @@ import io.ktor.server.websocket.*
 import io.ktor.websocket.*
 import com.service.authRoutes
 import com.service.tokenRoutes
-import com.service.itemRoutes
+import com.routes.itemRoutes
+import com.routes.localRoutes
 import com.service.requireValidToken
 
 fun Application.configureRouting() {
@@ -15,6 +16,8 @@ fun Application.configureRouting() {
         authRoutes()
         tokenRoutes()
         itemRoutes()
+        localRoutes()
+
 
         get("/") {
             call.respondText("Hello, World!")

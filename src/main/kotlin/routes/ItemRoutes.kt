@@ -1,8 +1,9 @@
-package com.service
+package com.routes
 
 import com.database.ItemCompraTable
 import com.database.ListaCompraTable
 import com.database.TokenTable
+import com.service.requireValidToken
 import io.ktor.http.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
