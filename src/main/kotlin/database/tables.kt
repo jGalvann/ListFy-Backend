@@ -41,6 +41,7 @@ object ItemCompraTable : Table("item_compra") {
     val quantidade = integer("quantidade")
     val descricao  = varchar("descricao", 250).nullable()
     val status     = bool("status").default(false)
+    val dataCompra = date("data_compra").nullable()
 
     override val primaryKey = PrimaryKey(idCompra)
 }

@@ -18,7 +18,6 @@ fun Application.configureRouting() {
         itemRoutes()
         localRoutes()
 
-
         get("/") {
             call.respondText("Hello, World!")
         }

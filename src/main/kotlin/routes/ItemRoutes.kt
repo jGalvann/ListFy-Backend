@@ -17,6 +17,7 @@ import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.jetbrains.exposed.sql.deleteWhere
 import org.jetbrains.exposed.sql.update
+import java.time.LocalDate
 
 @Serializable
 data class CreateItemRequest(
@@ -33,7 +34,8 @@ data class ItemResponse(
     val quantidade: Int,
     val descricao: String? = null,
     val idLocal: Int? = null,
-    val comprado: Boolean
+    val comprado: Boolean,
+    val dataCompra: String? = null
 )
 
 @Serializable
@@ -45,7 +47,10 @@ data class UpdateItemRequest(
 )
 
 @Serializable
-data class UpdateStatusRequest(val status: String)
+data class ItemStatusUpdate(val id: Int, val status: String)
+
+@Serializable
+data class UpdateMultipleStatusRequest(val itens: List<ItemStatusUpdate>)
 
 
 fun Route.itemRoutes() {
@@ -99,7 +104,8 @@ fun Route.itemRoutes() {
                 .where {
                     (ItemCompraTable.idLista eq idListaUsuario) and
                             (ItemCompraTable.nome eq body.nome) and
-                            (ItemCompraTable.idLocal eq body.idLocal)
+                            (ItemCompraTable.idLocal eq body.idLocal) and
+                            (ItemCompraTable.status eq false)
                 }
                 .any()
 
@@ -323,31 +329,39 @@ fun Route.itemRoutes() {
         }
     }
 
-    patch("/itens/{id}/status") {
+    @Serializable
+    data class ItemStatusUpdate(val id: Int, val status: String)
+
+    @Serializable
+    data class UpdateMultipleStatusRequest(val itens: List<ItemStatusUpdate>)
+
+    patch("/itens/status") {
         if (!requireValidToken()) return@patch
 
         val rawToken = call.request.headers["Authorization"]
             ?.removePrefix("Bearer ")?.trim() ?: return@patch
 
-        val idCompra = call.parameters["id"]?.toIntOrNull()
-        if (idCompra == null) {
-            call.respond(HttpStatusCode.BadRequest, mapOf("error" to "ID inválido."))
+        val body = call.receive<UpdateMultipleStatusRequest>()
+
+        if (body.itens.isEmpty()) {
+            call.respond(HttpStatusCode.BadRequest, mapOf("error" to "Informe ao menos um item."))
             return@patch
         }
 
-        val body = call.receive<UpdateStatusRequest>()
-
-        // RN05: só aceita os dois valores válidos
-        val novoStatus = when (body.status) {
-            "comprado" -> true
-            "pendente" -> false
-            else -> {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "Status inválido. Use 'comprado' ou 'pendente'."))
-                return@patch
+        // Valida os status antes de ir ao banco
+        val statusMap = body.itens.associate { item ->
+            val novoStatus = when (item.status) {
+                "comprado" -> true
+                "pendente" -> false
+                else -> {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "Status inválido no item ${item.id}. Use 'comprado' ou 'pendente'."))
+                    return@patch
+                }
             }
+            item.id to novoStatus
         }
 
-        val resultado = transaction {
+        transaction {
             val idTokenUsuario = TokenTable
                 .selectAll()
                 .where { TokenTable.valor eq rawToken }
@@ -357,35 +371,19 @@ fun Route.itemRoutes() {
                 .selectAll()
                 .where { ListaCompraTable.idToken eq idTokenUsuario }
                 .singleOrNull()?.get(ListaCompraTable.idLista)
-                ?: return@transaction null
+                ?: return@transaction
 
-            val itemRow = ItemCompraTable
-                .selectAll()
-                .where {
+            statusMap.forEach { (idCompra, novoStatus) ->
+                ItemCompraTable.update({
                     (ItemCompraTable.idCompra eq idCompra) and
                             (ItemCompraTable.idLista eq idListaUsuario)
+                }) {
+                    it[status] = novoStatus
+                    it[dataCompra] = if (novoStatus) LocalDate.now() else null
                 }
-                .singleOrNull() ?: return@transaction null
-
-            ItemCompraTable.update({ ItemCompraTable.idCompra eq idCompra }) {
-                it[status] = novoStatus
             }
-
-            // Retorna o item atualizado
-            ItemResponse(
-                idCompra   = itemRow[ItemCompraTable.idCompra],
-                nome       = itemRow[ItemCompraTable.nome],
-                quantidade = itemRow[ItemCompraTable.quantidade],
-                descricao  = itemRow[ItemCompraTable.descricao],
-                idLocal    = itemRow[ItemCompraTable.idLocal],
-                comprado   = novoStatus
-            )
         }
 
-        if (resultado == null) {
-            call.respond(HttpStatusCode.NotFound, mapOf("error" to "Item não encontrado."))
-        } else {
-            call.respond(HttpStatusCode.OK, resultado)
-        }
+        call.respond(HttpStatusCode.OK, mapOf("message" to "Itens atualizados com sucesso!"))
     }
 }

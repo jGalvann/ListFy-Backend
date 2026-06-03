@@ -147,4 +147,59 @@ fun Route.localRoutes() {
             else -> call.respond(HttpStatusCode.InternalServerError)
         }
     }
+
+    @Serializable
+    data class UpdateLocalRequest(val nome: String)
+
+    put("/locais/{id}") {
+        if (!requireValidToken()) return@put
+
+        val idLocal = call.parameters["id"]?.toIntOrNull()
+        if (idLocal == null) {
+            call.respond(HttpStatusCode.BadRequest, mapOf("error" to "ID inválido."))
+            return@put
+        }
+
+        val body = call.receive<UpdateLocalRequest>()
+
+        if (body.nome.isBlank()) {
+            call.respond(HttpStatusCode.BadRequest, mapOf("error" to "O nome do local é obrigatório."))
+            return@put
+        }
+
+        if (body.nome.length > 50) {
+            call.respond(HttpStatusCode.BadRequest, mapOf("error" to "O nome deve ter no máximo 50 caracteres."))
+            return@put
+        }
+
+        val resultado = transaction {
+            val existe = LocalCompraTable
+                .selectAll()
+                .where { LocalCompraTable.idLocal eq idLocal }
+                .singleOrNull() ?: return@transaction "not_found"
+
+            val nomeJaUsado = LocalCompraTable
+                .selectAll()
+                .where {
+                    (LocalCompraTable.nome eq body.nome) and
+                            (LocalCompraTable.idLocal neq idLocal)
+                }
+                .any()
+
+            if (nomeJaUsado) return@transaction "conflict"
+
+            LocalCompraTable.update({ LocalCompraTable.idLocal eq idLocal }) {
+                it[nome] = body.nome
+            }
+
+            "ok"
+        }
+
+        when (resultado) {
+            "not_found" -> call.respond(HttpStatusCode.NotFound, mapOf("error" to "Local não encontrado."))
+            "conflict"  -> call.respond(HttpStatusCode.Conflict, mapOf("error" to "Já existe um local com este nome."))
+            "ok"        -> call.respond(HttpStatusCode.OK, mapOf("message" to "Local atualizado com sucesso!"))
+            else        -> call.respond(HttpStatusCode.InternalServerError)
+        }
+    }
 }
