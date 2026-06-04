@@ -1,5 +1,6 @@
 
-FROM gradle:8.7-jdk21 AS build
+# ─── Stage 1: Build ───────────────────────────────────────────────────────────
+FROM gradle:8.11-jdk21 AS build
 
 WORKDIR /app
 
@@ -16,7 +17,7 @@ COPY src/ src/
 # Gera o fat JAR (shadowJar via plugin Ktor)
 RUN gradle buildFatJar --no-daemon
 
-
+# ─── Stage 2: Runtime ─────────────────────────────────────────────────────────
 FROM eclipse-temurin:21-jre-alpine
 
 WORKDIR /app
