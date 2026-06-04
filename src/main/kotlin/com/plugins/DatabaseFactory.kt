@@ -11,12 +11,19 @@ import org.jetbrains.exposed.sql.transactions.transaction
 object DatabaseFactory {
 
     fun init() {
-        val dotenv = dotenv()
+
+        val dotenv = dotenv {
+            ignoreIfMissing = true
+        }
+
+        fun env(key: String): String =
+            dotenv[key] ?: System.getenv(key)
+            ?: error("Variável de ambiente '$key' não encontrada.")
 
         val config = HikariConfig().apply {
-            jdbcUrl              = dotenv["DATABASE_URL"]
-            username             = dotenv["DATABASE_USER"]
-            password             = dotenv["DATABASE_PASSWORD"]
+            jdbcUrl              = env("DATABASE_URL")
+            username             = env("DATABASE_USER")
+            password             = env("DATABASE_PASSWORD")
             driverClassName      = "org.postgresql.Driver"
             maximumPoolSize      = 5
             isAutoCommit         = false
