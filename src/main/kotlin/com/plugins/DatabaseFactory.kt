@@ -11,21 +11,29 @@ import org.jetbrains.exposed.sql.transactions.transaction
 object DatabaseFactory {
 
     fun init() {
-
-        val dotenv = dotenv {
-            ignoreIfMissing = true
+        // Carrega o dotenv com segurança para não quebrar em produção
+        val dotenv = try {
+            dotenv { ignoreIfMissing = true }
+        } catch (e: Exception) {
+            null
         }
 
-        fun env(key: String): String =
-            dotenv[key] ?: System.getenv(key)
-            ?: error("Variável de ambiente '$key' não encontrada.")
+        // Função de ajuda corrigida: tenta dotenv, depois Railway, se não achar usa o padrão opcional
+        fun env(key: String, defaultValue: String? = null): String {
+            return dotenv?.get(key)
+                ?: System.getenv(key)
+                ?: defaultValue
+                ?: error("Variável de ambiente '$key' não encontrada no .env ou no Railway.")
+        }
 
         val config = HikariConfig().apply {
-            jdbcUrl              = env("DATABASE_URL")
-            username             = env("DATABASE_USER")
-            password             = env("DATABASE_PASSWORD")
             driverClassName      = "org.postgresql.Driver"
-            maximumPoolSize      = 5
+            jdbcUrl              = env("DATABASE_URL")
+            username             = env("DATABASE_USER", "postgres") // Se não achar DATABASE_USER, usa "postgres"
+            password             = env("DATABASE_PASSWORD")
+
+            // Configurações recomendadas para nuvem e plano gratuito
+            maximumPoolSize      = 3
             isAutoCommit         = false
             transactionIsolation = "TRANSACTION_REPEATABLE_READ"
         }
