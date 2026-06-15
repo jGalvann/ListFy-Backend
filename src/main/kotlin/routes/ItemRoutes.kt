@@ -190,7 +190,8 @@ fun Route.itemRoutes() {
                     quantidade = row[ItemCompraTable.quantidade],
                     descricao  = row[ItemCompraTable.descricao],
                     idLocal    = row[ItemCompraTable.idLocal],
-                    comprado   = row[ItemCompraTable.status]
+                    comprado   = row[ItemCompraTable.status],
+                    dataCompra = row[ItemCompraTable.dataCompra]?.toString()
                 )
             }
         }
