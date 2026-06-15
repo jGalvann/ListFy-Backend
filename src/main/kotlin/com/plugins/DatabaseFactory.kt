@@ -48,8 +48,6 @@ object DatabaseFactory {
                 LocalCompraTable,
                 ListaCompraTable,
                 ItemCompraTable,
-                Historico,
-                HistoricoItem
             )
         }
     }

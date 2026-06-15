@@ -329,12 +329,6 @@ fun Route.itemRoutes() {
         }
     }
 
-    @Serializable
-    data class ItemStatusUpdate(val id: Int, val status: String)
-
-    @Serializable
-    data class UpdateMultipleStatusRequest(val itens: List<ItemStatusUpdate>)
-
     patch("/itens/status") {
         if (!requireValidToken()) return@patch
 
