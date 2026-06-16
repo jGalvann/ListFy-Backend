@@ -11,6 +11,7 @@ object TokenTable : Table("token") {
     val dataExpiracao  = date("data_expiracao")
     val ativoToken     = bool("ativo_token").default(true)
     val role           = varchar("role", 20)
+    val idTokenAdmin   = integer("id_token_admin").references(idToken).nullable()
 
     // Deixamos APENAS o idToken como Chave Primária
     override val primaryKey = PrimaryKey(idToken)

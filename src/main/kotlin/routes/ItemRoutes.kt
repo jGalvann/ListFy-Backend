@@ -52,81 +52,90 @@ data class ItemStatusUpdate(val id: Int, val status: String)
 @Serializable
 data class UpdateMultipleStatusRequest(val itens: List<ItemStatusUpdate>)
 
+/**
+ * Resolve o idLista compartilhado para um dado rawToken.
+ *
+ * Regra: se o token for do tipo USER e tiver um idTokenAdmin preenchido,
+ * usa a lista do admin dono. Assim admin e usuários vinculados compartilham
+ * a mesma lista. Se for o próprio admin (idTokenAdmin == null), usa a lista
+ * dele mesmo. Cria a lista na primeira vez, caso ainda não exista.
+ *
+ * ATENÇÃO: deve ser chamado DENTRO de um bloco transaction {}.
+ */
+fun resolverIdLista(rawToken: String): Int? {
+    val tokenRow = TokenTable
+        .selectAll()
+        .where { TokenTable.valor eq rawToken }
+        .singleOrNull() ?: return null
+
+    // Se for usuário com admin vinculado, aponta para o token do admin.
+    // Se for o próprio admin (ou token sem vínculo), usa o seu próprio idToken.
+    val idTokenDono = tokenRow[TokenTable.idTokenAdmin]
+        ?: tokenRow[TokenTable.idToken]
+
+    val listaRow = ListaCompraTable
+        .selectAll()
+        .where { ListaCompraTable.idToken eq idTokenDono }
+        .singleOrNull()
+
+    return if (listaRow == null) {
+        // Primeira vez: cria a lista vinculada ao token dono (normalmente o admin)
+        ListaCompraTable.insert {
+            it[idToken] = idTokenDono
+        }[ListaCompraTable.idLista]
+    } else {
+        listaRow[ListaCompraTable.idLista]
+    }
+}
 
 fun Route.itemRoutes() {
+
+    // ─── POST /itens ────────────────────────────────────────────────────────────
     post("/itens") {
-        // 1. Validação de autenticação via middleware existente
         if (!requireValidToken()) return@post
 
-        // Recupera o valor puro do token para identificar de quem é a lista
-        val rawToken = call.request.headers["Authorization"]?.removePrefix("Bearer ")?.trim()
-            ?: return@post
+        val rawToken = call.request.headers["Authorization"]
+            ?.removePrefix("Bearer ")?.trim() ?: return@post
 
         val body = call.receive<CreateItemRequest>()
 
-        // 2. Validações de Regra de Negócio (RN01)
         if (body.nome.isBlank()) {
             call.respond(HttpStatusCode.BadRequest, mapOf("error" to "O nome do item é obrigatório."))
             return@post
         }
-
         if (body.quantidade <= 0) {
             call.respond(HttpStatusCode.BadRequest, mapOf("error" to "A quantidade deve ser maior que zero."))
             return@post
         }
 
-        // 3. Operações de Banco de Dados dentro da Transação
         val resultado = transaction {
-            // Busca o id_token correspondente
-            val tokenRow = TokenTable
-                .selectAll()
-                .where { TokenTable.valor eq rawToken }
-                .single()
-            val idTokenUsuario = tokenRow[TokenTable.idToken]
+            val idListaCompartilhada = resolverIdLista(rawToken)
+                ?: return@transaction HttpStatusCode.Unauthorized
 
-            // Busca ou cria uma Lista de Compras (ListaCompraTable) para este token caso não exista
-            val listaRow = ListaCompraTable
-                .selectAll()
-                .where { ListaCompraTable.idToken eq idTokenUsuario }
-                .singleOrNull()
-
-            val idListaUsuario = if (listaRow == null) {
-                ListaCompraTable.insert {
-                    it[idToken] = idTokenUsuario
-                }[ListaCompraTable.idLista]
-            } else {
-                listaRow[ListaCompraTable.idLista]
-            }
-
-            // Checa duplicidade: mesmo nome + mesmo idLocal na mesma lista (RN06)
             val existeDuplicado = ItemCompraTable
                 .selectAll()
                 .where {
-                    (ItemCompraTable.idLista eq idListaUsuario) and
+                    (ItemCompraTable.idLista eq idListaCompartilhada) and
                             (ItemCompraTable.nome eq body.nome) and
                             (ItemCompraTable.idLocal eq body.idLocal) and
                             (ItemCompraTable.status eq false)
                 }
                 .any()
 
-            if (existeDuplicado) {
-                return@transaction HttpStatusCode.Conflict
-            }
+            if (existeDuplicado) return@transaction HttpStatusCode.Conflict
 
-            // Persiste o item com status=false (equivalente a pendente)
             ItemCompraTable.insert {
-                it[idLista] = idListaUsuario
-                it[idLocal] = body.idLocal
-                it[nome] = body.nome
+                it[idLista]    = idListaCompartilhada
+                it[idLocal]    = body.idLocal
+                it[nome]       = body.nome
                 it[quantidade] = body.quantidade
-                it[descricao] = body.descricao
-                it[status] = false
+                it[descricao]  = body.descricao
+                it[status]     = false
             }
 
             HttpStatusCode.Created
         }
 
-        // 4. Retorno dos status HTTP correspondentes
         when (resultado) {
             HttpStatusCode.Conflict -> call.respond(
                 HttpStatusCode.Conflict,
@@ -140,45 +149,31 @@ fun Route.itemRoutes() {
         }
     }
 
-    // GET /itens?status=pendente|comprado&idLocal=X
+    // ─── GET /itens?status=pendente|comprado&idLocal=X ──────────────────────────
     get("/itens") {
         if (!requireValidToken()) return@get
 
         val rawToken = call.request.headers["Authorization"]
             ?.removePrefix("Bearer ")?.trim() ?: return@get
 
-        // Query params
-        val statusParam = call.request.queryParameters["status"]   // "pendente" | "comprado" | null
+        val statusParam  = call.request.queryParameters["status"]
         val idLocalParam = call.request.queryParameters["idLocal"]?.toIntOrNull()
 
         val itens = transaction {
-            // Resolve idLista do usuário
-            val idTokenUsuario = TokenTable
-                .selectAll()
-                .where { TokenTable.valor eq rawToken }
-                .single()[TokenTable.idToken]
+            val idListaCompartilhada = resolverIdLista(rawToken)
+                ?: return@transaction emptyList()
 
-            val listaRow = ListaCompraTable
-                .selectAll()
-                .where { ListaCompraTable.idToken eq idTokenUsuario }
-                .singleOrNull() ?: return@transaction emptyList()
-
-            val idListaUsuario = listaRow[ListaCompraTable.idLista]
-
-            // Monta a query base
             var query = ItemCompraTable
                 .selectAll()
-                .where { ItemCompraTable.idLista eq idListaUsuario }
+                .where { ItemCompraTable.idLista eq idListaCompartilhada }
 
-            // Filtro por status (RN04)
             when (statusParam) {
-                "pendente"  -> query = query.andWhere { ItemCompraTable.status eq false }
-                "comprado"  -> query = query.andWhere { ItemCompraTable.status eq true }
-                null        -> { /* sem filtro: retorna tudo */ }
-                else -> return@transaction null   // valor inválido → sinaliza 400
+                "pendente" -> query = query.andWhere { ItemCompraTable.status eq false }
+                "comprado" -> query = query.andWhere { ItemCompraTable.status eq true }
+                null       -> { /* sem filtro */ }
+                else       -> return@transaction null   // valor inválido → 400
             }
 
-            // Filtro por local
             if (idLocalParam != null) {
                 query = query.andWhere { ItemCompraTable.idLocal eq idLocalParam }
             }
@@ -205,6 +200,7 @@ fun Route.itemRoutes() {
         }
     }
 
+    // ─── PUT /itens/{id} ────────────────────────────────────────────────────────
     put("/itens/{id}") {
         if (!requireValidToken()) return@put
 
@@ -219,13 +215,10 @@ fun Route.itemRoutes() {
 
         val body = call.receive<UpdateItemRequest>()
 
-        // RN07: pelo menos um campo deve ser enviado
         if (body.nome == null && body.quantidade == null && body.descricao == null && body.idLocal == null) {
             call.respond(HttpStatusCode.BadRequest, mapOf("error" to "Informe ao menos um campo para atualizar."))
             return@put
         }
-
-        // RN01: validações se os campos foram enviados
         if (body.nome != null && body.nome.isBlank()) {
             call.respond(HttpStatusCode.BadRequest, mapOf("error" to "O nome do item não pode ser vazio."))
             return@put
@@ -236,51 +229,38 @@ fun Route.itemRoutes() {
         }
 
         val resultado = transaction {
-            // Garante que o item pertence à lista do token
-            val idTokenUsuario = TokenTable
-                .selectAll()
-                .where { TokenTable.valor eq rawToken }
-                .single()[TokenTable.idToken]
-
-            val idListaUsuario = ListaCompraTable
-                .selectAll()
-                .where { ListaCompraTable.idToken eq idTokenUsuario }
-                .singleOrNull()?.get(ListaCompraTable.idLista)
+            val idListaCompartilhada = resolverIdLista(rawToken)
                 ?: return@transaction HttpStatusCode.NotFound
 
             val itemRow = ItemCompraTable
                 .selectAll()
                 .where {
                     (ItemCompraTable.idCompra eq idCompra) and
-                            (ItemCompraTable.idLista eq idListaUsuario)
+                            (ItemCompraTable.idLista  eq idListaCompartilhada)
                 }
                 .singleOrNull() ?: return@transaction HttpStatusCode.NotFound
 
-            // RN07: bloqueia edição se já comprado
-            if (itemRow[ItemCompraTable.status]) {
-                return@transaction HttpStatusCode.Conflict
-            }
+            if (itemRow[ItemCompraTable.status]) return@transaction HttpStatusCode.Conflict
 
-            ItemCompraTable.update(
-                where = { ItemCompraTable.idCompra eq idCompra }
-            ) {
-                if (body.nome != null)       it[nome]       = body.nome
+            ItemCompraTable.update({ ItemCompraTable.idCompra eq idCompra }) {
+                if (body.nome       != null) it[nome]       = body.nome
                 if (body.quantidade != null) it[quantidade] = body.quantidade
-                if (body.descricao != null)  it[descricao]  = body.descricao
-                if (body.idLocal != null)    it[idLocal]    = body.idLocal
+                if (body.descricao  != null) it[descricao]  = body.descricao
+                if (body.idLocal    != null) it[idLocal]    = body.idLocal
             }
 
             HttpStatusCode.OK
         }
 
         when (resultado) {
-            HttpStatusCode.NotFound -> call.respond(HttpStatusCode.NotFound, mapOf("error" to "Item não encontrado."))
-            HttpStatusCode.Conflict -> call.respond(HttpStatusCode.Conflict, mapOf("error" to "Não é possível editar um item já comprado."))
-            HttpStatusCode.OK       -> call.respond(HttpStatusCode.OK, mapOf("message" to "Item atualizado com sucesso!"))
-            else                    -> call.respond(HttpStatusCode.InternalServerError)
+            HttpStatusCode.NotFound  -> call.respond(HttpStatusCode.NotFound,  mapOf("error" to "Item não encontrado."))
+            HttpStatusCode.Conflict  -> call.respond(HttpStatusCode.Conflict,  mapOf("error" to "Não é possível editar um item já comprado."))
+            HttpStatusCode.OK        -> call.respond(HttpStatusCode.OK,        mapOf("message" to "Item atualizado com sucesso!"))
+            else                     -> call.respond(HttpStatusCode.InternalServerError)
         }
     }
 
+    // ─── DELETE /itens/{id} ─────────────────────────────────────────────────────
     delete("/itens/{id}") {
         if (!requireValidToken()) return@delete
 
@@ -294,28 +274,18 @@ fun Route.itemRoutes() {
         }
 
         val resultado = transaction {
-            val idTokenUsuario = TokenTable
-                .selectAll()
-                .where { TokenTable.valor eq rawToken }
-                .single()[TokenTable.idToken]
-
-            val idListaUsuario = ListaCompraTable
-                .selectAll()
-                .where { ListaCompraTable.idToken eq idTokenUsuario }
-                .singleOrNull()?.get(ListaCompraTable.idLista)
+            val idListaCompartilhada = resolverIdLista(rawToken)
                 ?: return@transaction HttpStatusCode.NotFound
 
             val itemRow = ItemCompraTable
                 .selectAll()
                 .where {
                     (ItemCompraTable.idCompra eq idCompra) and
-                            (ItemCompraTable.idLista eq idListaUsuario)
+                            (ItemCompraTable.idLista  eq idListaCompartilhada)
                 }
                 .singleOrNull() ?: return@transaction HttpStatusCode.NotFound
 
-            if (itemRow[ItemCompraTable.status]) {
-                return@transaction HttpStatusCode.Conflict
-            }
+            if (itemRow[ItemCompraTable.status]) return@transaction HttpStatusCode.Conflict
 
             ItemCompraTable.deleteWhere { ItemCompraTable.idCompra eq idCompra }
 
@@ -323,13 +293,14 @@ fun Route.itemRoutes() {
         }
 
         when (resultado) {
-            HttpStatusCode.NotFound -> call.respond(HttpStatusCode.NotFound, mapOf("error" to "Item não encontrado."))
-            HttpStatusCode.Conflict -> call.respond(HttpStatusCode.Conflict, mapOf("error" to "Não é possível remover um item já comprado."))
+            HttpStatusCode.NotFound  -> call.respond(HttpStatusCode.NotFound,  mapOf("error" to "Item não encontrado."))
+            HttpStatusCode.Conflict  -> call.respond(HttpStatusCode.Conflict,  mapOf("error" to "Não é possível remover um item já comprado."))
             HttpStatusCode.NoContent -> call.respond(HttpStatusCode.NoContent)
-            else -> call.respond(HttpStatusCode.InternalServerError)
+            else                     -> call.respond(HttpStatusCode.InternalServerError)
         }
     }
 
+    // ─── PATCH /itens/status ────────────────────────────────────────────────────
     patch("/itens/status") {
         if (!requireValidToken()) return@patch
 
@@ -343,13 +314,15 @@ fun Route.itemRoutes() {
             return@patch
         }
 
-        // Valida os status antes de ir ao banco
         val statusMap = body.itens.associate { item ->
             val novoStatus = when (item.status) {
                 "comprado" -> true
                 "pendente" -> false
                 else -> {
-                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "Status inválido no item ${item.id}. Use 'comprado' ou 'pendente'."))
+                    call.respond(
+                        HttpStatusCode.BadRequest,
+                        mapOf("error" to "Status inválido no item ${item.id}. Use 'comprado' ou 'pendente'.")
+                    )
                     return@patch
                 }
             }
@@ -357,23 +330,15 @@ fun Route.itemRoutes() {
         }
 
         transaction {
-            val idTokenUsuario = TokenTable
-                .selectAll()
-                .where { TokenTable.valor eq rawToken }
-                .single()[TokenTable.idToken]
-
-            val idListaUsuario = ListaCompraTable
-                .selectAll()
-                .where { ListaCompraTable.idToken eq idTokenUsuario }
-                .singleOrNull()?.get(ListaCompraTable.idLista)
+            val idListaCompartilhada = resolverIdLista(rawToken)
                 ?: return@transaction
 
             statusMap.forEach { (idCompra, novoStatus) ->
                 ItemCompraTable.update({
                     (ItemCompraTable.idCompra eq idCompra) and
-                            (ItemCompraTable.idLista eq idListaUsuario)
+                            (ItemCompraTable.idLista  eq idListaCompartilhada)
                 }) {
-                    it[status] = novoStatus
+                    it[status]     = novoStatus
                     it[dataCompra] = if (novoStatus) LocalDate.now() else null
                 }
             }
